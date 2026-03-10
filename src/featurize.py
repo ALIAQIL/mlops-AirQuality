@@ -1,0 +1,67 @@
+import pandas as pd, numpy as np, yaml, os
+
+params = yaml.safe_load(open("params.yaml"))["featurize"]
+target_col = yaml.safe_load(open("params.yaml"))["prepare"]["target_col"]
+EXCLUDE = [target_col, "high_pollution", "Date", "Time"]
+
+
+def extract_time_features(df):
+    if "Date" in df.columns and "Time" in df.columns:
+        dt = pd.to_datetime(
+            df["Date"].astype(str) + " " + df["Time"].astype(str),
+            format="%d/%m/%Y %H.%M.%S",
+            errors="coerce",
+        )
+        df["hour"] = dt.dt.hour
+        df["dayofweek"] = dt.dt.dayofweek
+        df["month"] = dt.dt.month
+        df["is_weekend"] = (dt.dt.dayofweek >= 5).astype(int)
+        df["is_rushhour"] = df["hour"].isin([7, 8, 9, 17, 18, 19]).astype(int)
+    return df
+
+
+def process_split(path, fit_stats=None):
+    df = pd.read_csv(path)
+    if params["add_time_features"]:
+        df = extract_time_features(df)
+    feat_cols = [
+        c
+        for c in df.columns
+        if c not in EXCLUDE
+        and c not in ["hour", "dayofweek", "month", "is_weekend", "is_rushhour"]
+    ]
+    if params["drop_na_rows"]:
+        df = df.dropna(subset=feat_cols, thresh=len(feat_cols) // 2)
+    df = df.reset_index(drop=True)
+    if fit_stats is None:
+        fit_stats = {"median": df[feat_cols].median()}
+    df[feat_cols] = df[feat_cols].fillna(fit_stats["median"])
+    time_feats = [
+        c
+        for c in ["hour", "dayofweek", "month", "is_weekend", "is_rushhour"]
+        if c in df.columns
+    ]
+    all_feats = feat_cols + time_feats
+    if params["normalize"]:
+        if "min" not in fit_stats:
+            fit_stats["min"] = df[all_feats].min()
+            fit_stats["max"] = df[all_feats].max()
+        rng = fit_stats["max"] - fit_stats["min"]
+        rng[rng == 0] = 1
+        df[all_feats] = (df[all_feats] - fit_stats["min"]) / rng
+    return df, fit_stats
+
+
+train, stats = process_split("data/processed/train.csv")
+val, _ = process_split("data/processed/val.csv", stats)
+test, _ = process_split("data/processed/test.csv", stats)
+
+os.makedirs("data/features", exist_ok=True)
+train.to_csv("data/features/train_feat.csv", index=False)
+val.to_csv("data/features/val_feat.csv", index=False)
+test.to_csv("data/features/test_feat.csv", index=False)
+
+feat_cols = [c for c in train.columns if c not in EXCLUDE]
+print(f"Features prêtes — train:{len(train)}, val:{len(val)}, test:{len(test)}")
+print(f"Nombre de features : {len(feat_cols)}")
+print(f"Features : {feat_cols}")
